@@ -5,7 +5,6 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
-  SuggestModal,
   TFile,
 } from "obsidian";
 
@@ -15,14 +14,12 @@ import {
 
 interface UnresolvedLinkHelperSettings {
   defaultFolder: string;
-  defaultTemplatePath: string;
   openNewNote: boolean;
   rewriteSourceLink: boolean;
 }
 
 const DEFAULT_SETTINGS: UnresolvedLinkHelperSettings = {
   defaultFolder: "People",
-  defaultTemplatePath: "",
   openNewNote: true,
   rewriteSourceLink: true,
 };
@@ -30,61 +27,26 @@ const DEFAULT_SETTINGS: UnresolvedLinkHelperSettings = {
 interface CreateConfig {
   title: string;
   folder: string;
-  template: TFile | null;
 }
 
 /* =========================
- * 模板选择器
- * ========================= */
-
-class TemplateSuggestModal extends SuggestModal<TFile> {
-  private onChoose: (file: TFile) => void;
-
-  constructor(app: App, onChoose: (file: TFile) => void) {
-    super(app);
-    this.onChoose = onChoose;
-    this.setPlaceholder("搜索模板文件...");
-  }
-
-  getSuggestions(query: string): TFile[] {
-    const q = query.toLowerCase();
-    return this.app.vault
-      .getMarkdownFiles()
-      .filter((f) => f.basename.toLowerCase().includes(q))
-      .slice(0, 50);
-  }
-
-  renderSuggestion(file: TFile, el: HTMLElement): void {
-    el.createEl("div", { text: file.basename });
-    el.createEl("small", { text: file.path });
-  }
-
-  onChooseSuggestion(file: TFile): void {
-    this.onChoose(file);
-  }
-}
-
-/* =========================
- * 创建配置弹窗
+ * 创建配置弹窗（已去掉模板选择）
  * ========================= */
 
 class CreateConfigModal extends Modal {
   private title: string;
   private folder: string;
-  private template: TFile | null;
   private onSubmit: (cfg: CreateConfig) => void;
 
   constructor(
     app: App,
     defaultTitle: string,
     defaultFolder: string,
-    defaultTemplate: TFile | null,
     onSubmit: (cfg: CreateConfig) => void
   ) {
     super(app);
     this.title = defaultTitle;
     this.folder = defaultFolder;
-    this.template = defaultTemplate;
     this.onSubmit = onSubmit;
   }
 
@@ -101,23 +63,9 @@ class CreateConfigModal extends Modal {
 
     new Setting(contentEl)
       .setName("保存位置")
-      .setDesc("笔记将被创建到这个文件夹")
+      .setDesc("笔记将被创建到这个文件夹，模板由 Templater 的文件夹模板决定")
       .addText((t) =>
         t.setValue(this.folder).onChange((v) => (this.folder = v.trim()))
-      );
-
-    new Setting(contentEl)
-      .setName("模板")
-      .setDesc("创建时应用的模板，留空则不套用")
-      .addButton((b) =>
-        b
-          .setButtonText(this.template ? this.template.basename : "选择模板")
-          .onClick(() => {
-            new TemplateSuggestModal(this.app, (file) => {
-              this.template = file;
-              b.setButtonText(file.basename);
-            }).open();
-          })
       );
 
     new Setting(contentEl).addButton((b) =>
@@ -133,7 +81,6 @@ class CreateConfigModal extends Modal {
           this.onSubmit({
             title: this.title,
             folder: this.folder,
-            template: this.template,
           });
         })
     );
@@ -149,7 +96,7 @@ class CreateConfigModal extends Modal {
  * ========================= */
 
 export default class UnresolvedLinkHelper extends Plugin {
-  settings: UnresolvedLinkHelperSettings = { ...DEFAULT_SETTINGS };
+  settings!: UnresolvedLinkHelperSettings;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -161,25 +108,26 @@ export default class UnresolvedLinkHelper extends Plugin {
     this.addSettingTab(new UnresolvedLinkHelperSettingTab(this.app, this));
   }
 
-  onunload(): void {
-    // 无需手动清理，registerDomEvent 会自动移除
-  }
-
   /* ---------- 点击拦截 ---------- */
 
   private handleClick(evt: MouseEvent): void {
-
     const target = evt.target as HTMLElement | null;
     if (!target) return;
 
-    let linkEl: HTMLElement | null = target.closest("a.internal-link.is-unresolved");
+    let linkEl: HTMLElement | null = target.closest(
+      "a.internal-link.is-unresolved"
+    );
 
     if (!linkEl) {
       const candidate = target.closest("[data-href]") as HTMLElement | null;
       if (candidate) {
         const href = candidate.getAttribute("data-href") || "";
-        const targetPath = (href.split("|")[0] ?? "").split("#")[0]?.trim() ?? "";
-        if (targetPath && !this.app.metadataCache.getFirstLinkpathDest(targetPath, "")) {
+        const targetPath =
+          (href.split("|")[0] ?? "").split("#")[0]?.trim() ?? "";
+        if (
+          targetPath &&
+          !this.app.metadataCache.getFirstLinkpathDest(targetPath, "")
+        ) {
           linkEl = candidate;
         }
       }
@@ -189,12 +137,8 @@ export default class UnresolvedLinkHelper extends Plugin {
       const cmUnderline = target.closest(".cm-underline") as HTMLElement | null;
       if (cmUnderline) {
         const text = cmUnderline.textContent?.trim() || "";
-        const activeFile = this.app.workspace.getActiveFile();
-        if (activeFile && text) {
-          const unresolved = this.app.metadataCache.unresolvedLinks[activeFile.path] || {};
-          if (unresolved[text] !== undefined) {
-            linkEl = cmUnderline;
-          }
+        if (text && !this.app.metadataCache.getFirstLinkpathDest(text, "")) {
+          linkEl = cmUnderline;
         }
       }
     }
@@ -204,7 +148,8 @@ export default class UnresolvedLinkHelper extends Plugin {
     evt.preventDefault();
     evt.stopPropagation();
 
-    const href = linkEl.getAttribute("data-href") || linkEl.textContent?.trim() || "";
+    const href =
+      linkEl.getAttribute("data-href") || linkEl.textContent?.trim() || "";
     if (!href) return;
 
     const [targetTitle, displayText] = this.parseLink(href);
@@ -216,39 +161,23 @@ export default class UnresolvedLinkHelper extends Plugin {
       this.app,
       targetTitle,
       this.settings.defaultFolder,
-      this.getDefaultTemplate(),
       (cfg) => {
-        void this.createNoteWithConfig(cfg, sourceFile, targetTitle, displayText);
+        void this.createNoteWithConfig(
+          cfg,
+          sourceFile,
+          targetTitle,
+          displayText
+        );
       }
     ).open();
   }
 
-  /**
-   * 解析 [[目标|别名]] 或 [[目标#标题|别名]] 的 data-href。
-   * 返回 [目标标题, 显示文本/别名]。
-   */
   private parseLink(href: string): [string, string] {
     const parts = href.split("|");
     const targetPart = (parts[0] ?? "").trim();
     const target = (targetPart.split("#")[0] ?? "").trim();
     const display = (parts[1] ?? "").trim() || target;
     return [target, display];
-  }
-
-  private getDefaultTemplate(): TFile | null {
-    if (!this.settings.defaultTemplatePath) return null;
-    const file = this.app.vault.getAbstractFileByPath(
-      this.settings.defaultTemplatePath
-    );
-    return file instanceof TFile ? file : null;
-  }
-
-  private getTodayString(): string {
-    const d = new Date();
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
   }
 
   /* ---------- 创建流程 ---------- */
@@ -279,34 +208,27 @@ export default class UnresolvedLinkHelper extends Plugin {
         ? `${cfg.folder}/${safeTitle}.md`
         : `${safeTitle}.md`;
 
-      let targetFile = this.app.vault.getAbstractFileByPath(filePath);
+      let file = this.app.vault.getAbstractFileByPath(filePath);
 
-      if (targetFile instanceof TFile) {
-        // 文件已存在：不重建，只补别名并提示
+      if (file instanceof TFile) {
         new Notice(`文件已存在，将合并别名：${filePath}`);
       } else {
-        // 1. 先创建空文件
-        targetFile = await this.app.vault.create(filePath, "");
-
-        // 2. 再写入模板（必须 await 完成，保证别名不会被覆盖）
-        if (cfg.template) {
-          const templateContent = await this.app.vault.read(cfg.template);
-          const processed = templateContent
-            .replace(/{{title}}/g, cfg.title)
-            .replace(/{{date}}/g, this.getTodayString());
-          await this.app.vault.modify(targetFile as TFile, processed);
-        }
+        // 只创建空文件，模板由 Templater 的文件夹模板自动触发
+        file = await this.app.vault.create(filePath, "");
       }
 
-      const file = targetFile as TFile;
+      const targetFile = file as TFile;
 
-      // 3. 模板写完后，再合并别名
+      // 等待 Templater 异步触发并完成模板写入，避免别名被覆盖
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      // 合并别名（在模板写入之后）
       const aliasToAdd = displayText || originalAlias;
       if (aliasToAdd) {
-        await this.addAlias(file, aliasToAdd);
+        await this.addAlias(targetFile, aliasToAdd);
       }
 
-      // 4. 若标题被改过，回写源链接
+      // 回写源链接
       if (
         this.settings.rewriteSourceLink &&
         sourceFile &&
@@ -321,7 +243,7 @@ export default class UnresolvedLinkHelper extends Plugin {
       }
 
       if (this.settings.openNewNote) {
-        await this.app.workspace.getLeaf().openFile(file);
+        await this.app.workspace.getLeaf().openFile(targetFile);
       }
 
       new Notice(`已创建：${cfg.title}`);
@@ -399,26 +321,15 @@ class UnresolvedLinkHelperSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("默认保存文件夹")
-      .setDesc("Ctrl+点击未解析链接时，弹窗中默认填入的文件夹")
+      .setDesc(
+        "创建笔记时弹窗中默认填入的文件夹。模板由 Templater 的文件夹模板决定"
+      )
       .addText((t) =>
         t
           .setPlaceholder("People")
           .setValue(this.plugin.settings.defaultFolder)
           .onChange(async (v) => {
             this.plugin.settings.defaultFolder = v.trim();
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("默认模板路径")
-      .setDesc("例如 Templates/人物模板.md；留空表示不预选模板")
-      .addText((t) =>
-        t
-          .setPlaceholder("Templates/人物模板.md")
-          .setValue(this.plugin.settings.defaultTemplatePath)
-          .onChange(async (v) => {
-            this.plugin.settings.defaultTemplatePath = v.trim();
             await this.plugin.saveSettings();
           })
       );
