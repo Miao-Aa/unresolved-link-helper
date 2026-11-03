@@ -2,7 +2,7 @@
   "id": "unresolved-link-helper",
   "name": "Unresolved Link Helper",
   "version": "1.0.0",
-  "minAppVersion": "1.0.0",
+  "minAppVersion": "1.4.4",
   "description": "Enhance Ctrl+click on unresolved links with alias and template options.",
   "author": "playerertao",
   "isDesktopOnly": false

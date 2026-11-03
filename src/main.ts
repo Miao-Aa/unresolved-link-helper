@@ -63,7 +63,7 @@ class CreateConfigModal extends Modal {
 
     new Setting(contentEl)
       .setName("保存位置")
-      .setDesc("笔记将被创建到这个文件夹，模板由 Templater 的文件夹模板决定")
+      .setDesc("笔记将被创建到这个文件夹，模板由 templater 的文件夹模板决定")
       .addText((t) =>
         t.setValue(this.folder).onChange((v) => (this.folder = v.trim()))
       );
@@ -114,12 +114,12 @@ export default class UnresolvedLinkHelper extends Plugin {
     const target = evt.target as HTMLElement | null;
     if (!target) return;
 
-    let linkEl: HTMLElement | null = target.closest(
+    let linkEl: Element | null = target.closest(
       "a.internal-link.is-unresolved"
     );
 
     if (!linkEl) {
-      const candidate = target.closest("[data-href]") as HTMLElement | null;
+      const candidate = target.closest("[data-href]");
       if (candidate) {
         const href = candidate.getAttribute("data-href") || "";
         const targetPath =
@@ -134,7 +134,7 @@ export default class UnresolvedLinkHelper extends Plugin {
     }
 
     if (!linkEl) {
-      const cmUnderline = target.closest(".cm-underline") as HTMLElement | null;
+      const cmUnderline = target.closest(".cm-underline");
       if (cmUnderline) {
         const text = cmUnderline.textContent?.trim() || "";
         if (text && !this.app.metadataCache.getFirstLinkpathDest(text, "")) {
@@ -213,14 +213,18 @@ export default class UnresolvedLinkHelper extends Plugin {
       if (file instanceof TFile) {
         new Notice(`文件已存在，将合并别名：${filePath}`);
       } else {
-        // 只创建空文件，模板由 Templater 的文件夹模板自动触发
+        // 只创建空文件，模板由 templater 的文件夹模板自动触发
         file = await this.app.vault.create(filePath, "");
       }
 
-      const targetFile = file as TFile;
+      if (!(file instanceof TFile)) {
+        new Notice("创建失败：无法获取目标文件");
+        return;
+      }
+      const targetFile = file;
 
-      // 等待 Templater 异步触发并完成模板写入，避免别名被覆盖
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      // 等待 templater 异步触发并完成模板写入，避免别名被覆盖
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
 
       // 合并别名（在模板写入之后）
       const aliasToAdd = displayText || originalAlias;
@@ -256,16 +260,20 @@ export default class UnresolvedLinkHelper extends Plugin {
   /* ---------- 别名与回写 ---------- */
 
   private async addAlias(file: TFile, alias: string): Promise<void> {
-    await this.app.fileManager.processFrontMatter(file, (fm) => {
-      const existing = Array.isArray(fm.aliases)
-        ? fm.aliases
-        : fm.aliases
-          ? [fm.aliases]
-          : [];
-      if (!existing.includes(alias)) {
-        fm.aliases = [...existing, alias];
+    await this.app.fileManager.processFrontMatter(
+      file,
+      (fm: Record<string, unknown>) => {
+        const raw = fm.aliases;
+        const existing: string[] = Array.isArray(raw)
+          ? raw.filter((a): a is string => typeof a === "string")
+          : typeof raw === "string"
+            ? [raw]
+            : [];
+        if (!existing.includes(alias)) {
+          fm.aliases = [...existing, alias];
+        }
       }
-    });
+    );
   }
 
   private async rewriteSourceLink(
@@ -295,7 +303,12 @@ export default class UnresolvedLinkHelper extends Plugin {
   /* ---------- 设置持久化 ---------- */
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const loaded: unknown = await this.loadData();
+    const data =
+      loaded && typeof loaded === "object"
+        ? (loaded as Partial<UnresolvedLinkHelperSettings>)
+        : {};
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
   }
 
   async saveSettings(): Promise<void> {
@@ -322,7 +335,7 @@ class UnresolvedLinkHelperSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("默认保存文件夹")
       .setDesc(
-        "创建笔记时弹窗中默认填入的文件夹。模板由 Templater 的文件夹模板决定"
+        "创建笔记时弹窗中默认填入的文件夹。模板由 templater 的文件夹模板决定"
       )
       .addText((t) =>
         t
