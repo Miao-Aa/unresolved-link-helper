@@ -109,36 +109,98 @@ export default class UnresolvedLinkHelper extends Plugin {
   }
 
   /* ---------- 点击拦截 ---------- */
-
   private handleClick(evt: MouseEvent): void {
     const target = evt.target as HTMLElement | null;
     if (!target) return;
 
-    let linkEl: Element | null = target.closest(
-      "a.internal-link.is-unresolved"
-    );
+    // 1. 排除外部链接
+    if (target.closest("a.external-link")) return;
+    const anyAnchor = target.closest("a");
+    if (anyAnchor) {
+      const href = anyAnchor.getAttribute("href") || "";
+      if (/^(https?|mailto|tel|ftp|obsidian):/i.test(href)) return;
+    }
 
+    // 2. 页面预览弹窗（悬停未解析链接时的“点击以创建”）
+    const popover = target.closest(".popover.hover-popover");
+    if (popover) {
+      const emptyEmbed = popover.querySelector(".file-embed.mod-empty");
+      if (emptyEmbed) {
+        const text = emptyEmbed.textContent || "";
+        const match = text.match(/[“"]([^”"]+)[”"]/);
+        if (match && match[1]) {
+          const targetTitle = match[1].trim();
+          if (targetTitle) {
+            evt.preventDefault();
+            evt.stopPropagation();
+            const sourceFile = this.app.workspace.getActiveFile();
+            new CreateConfigModal(
+              this.app,
+              targetTitle,
+              this.settings.defaultFolder,
+              (cfg) => {
+                void this.createNoteWithConfig(
+                  cfg,
+                  sourceFile,
+                  targetTitle,
+                  targetTitle
+                );
+              }
+            ).open();
+            return;
+          }
+        }
+      }
+      // 不是“未创建”弹窗，不拦截
+      return;
+    }
+
+    // 3. 阅读视图 / 实时预览中的未解析链接
+    let linkEl: Element | null = target.closest("a.internal-link.is-unresolved");
+
+    // 4. [data-href] 分支（兼容部分视图结构）
     if (!linkEl) {
       const candidate = target.closest("[data-href]");
       if (candidate) {
-        const href = candidate.getAttribute("data-href") || "";
-        const targetPath =
-          (href.split("|")[0] ?? "").split("#")[0]?.trim() ?? "";
-        if (
-          targetPath &&
-          !this.app.metadataCache.getFirstLinkpathDest(targetPath, "")
-        ) {
-          linkEl = candidate;
+        const isExternal =
+          candidate.classList.contains("external-link") ||
+          (candidate.tagName === "A" &&
+            candidate.hasAttribute("href") &&
+            !candidate.classList.contains("internal-link"));
+
+        if (!isExternal) {
+          const href = candidate.getAttribute("data-href") || "";
+          if (!/^(https?|mailto|tel|ftp):/i.test(href)) {
+            const targetPath =
+              (href.split("|")[0] ?? "").split("#")[0]?.trim() ?? "";
+            if (
+              targetPath &&
+              !this.app.metadataCache.getFirstLinkpathDest(targetPath, "")
+            ) {
+              linkEl = candidate;
+            }
+          }
         }
       }
     }
 
+    // 5. .cm-underline 分支（编辑视图中的链接）
     if (!linkEl) {
       const cmUnderline = target.closest(".cm-underline");
       if (cmUnderline) {
+        // 外链的 URL 部分会渲染成 .cm-url 或 .external-link，且与 cm-underline 同行
+        const cmLine = cmUnderline.closest(".cm-line");
+        const hasExternalMarker = cmLine
+          ? cmLine.querySelector(".cm-url, .external-link") !== null
+          : false;
+
         const text = cmUnderline.textContent?.trim() || "";
-        if (text && !this.app.metadataCache.getFirstLinkpathDest(text, "")) {
-          linkEl = cmUnderline;
+        const isUrlText = /^(https?:\/\/|www\.)/i.test(text);
+
+        if (!hasExternalMarker && !isUrlText) {
+          if (text && !this.app.metadataCache.getFirstLinkpathDest(text, "")) {
+            linkEl = cmUnderline;
+          }
         }
       }
     }
